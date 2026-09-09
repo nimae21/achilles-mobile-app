@@ -1,0 +1,7 @@
+{
+  "name": "achilles-mobile",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "vue-vite"
+}
