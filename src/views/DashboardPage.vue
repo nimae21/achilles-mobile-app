@@ -181,6 +181,7 @@
             </div>
           </section>
 
+          <p v-if="refreshing" class="update-note" role="status">Updating...</p>
           <p class="footer-note">
             Snapshot generated {{ dateLabel(generatedAt) }} · pull down to refresh
           </p>
@@ -214,20 +215,26 @@ import { compactMoney, count, dateLabel, initialsOf, money, timeAgo, titleCase }
 import { notificationState, setBadges } from '../services/notifications'
 import { readCache, writeCache } from '../services/screen-cache'
 import { session } from '../services/session'
+import { onAppResume } from '../composables/useAppEvents'
 import ListState from '../components/ListState.vue'
 import StatCard from '../components/StatCard.vue'
 import StatusPill from '../components/StatusPill.vue'
 
 const router = useRouter()
 const loading = ref(true)
+const refreshing = ref(false)
 const error = ref('')
 const data = ref<DashboardData | null>(null)
+/** When the snapshot on screen was last confirmed by the server. */
+const lastLoadedAt = ref(0)
 
 // Paint the last snapshot immediately, then revalidate in the background.
 const cachedDashboard = readCache<DashboardData>('dashboard', 60_000)
 if (cachedDashboard) {
   data.value = cachedDashboard
   loading.value = false
+  // The cache only ever serves snapshots fetched within the last minute.
+  lastLoadedAt.value = Date.now()
 }
 
 const summary = computed(() => data.value?.summary ?? {})
@@ -260,11 +267,14 @@ function go(path: string | null): void {
 }
 
 async function load(fresh = false): Promise<void> {
-  loading.value = data.value === null
+  const hasData = data.value !== null
+  loading.value = !hasData
+  refreshing.value = hasData
   try {
     const payload = await api.dashboard(fresh)
     data.value = payload
     error.value = ''
+    lastLoadedAt.value = Date.now()
     // The badge numbers are shipped with the dashboard, so no extra requests.
     setBadges({
       unread: payload.badges?.unread_notifications,
@@ -276,7 +286,19 @@ async function load(fresh = false): Promise<void> {
     error.value = (caught as Error).message
   } finally {
     loading.value = false
+    refreshing.value = false
   }
+}
+
+/**
+ * A resume only re-fetches when the snapshot on screen has aged past the
+ * window the cache considers fresh, so unlocking the phone twice in a row
+ * costs no extra request.
+ */
+async function refreshIfStale(minAgeMs = 60_000): Promise<void> {
+  if (loading.value || refreshing.value) return
+  if (Date.now() - lastLoadedAt.value < minAgeMs) return
+  await load()
 }
 
 async function refresh(event?: CustomEvent): Promise<void> {
@@ -285,10 +307,8 @@ async function refresh(event?: CustomEvent): Promise<void> {
   ;(event?.target as { complete?: () => void } | undefined)?.complete?.()
 }
 
-onMounted(() => {
-  void load()
-  window.addEventListener('app-resumed', () => void load())
-})
+onMounted(() => void load())
+onAppResume(() => void refreshIfStale())
 
 </script>
 
@@ -387,5 +407,18 @@ onMounted(() => {
   text-align: center;
   font-size: 0.72rem;
   color: var(--slate-400);
+}
+
+.update-note {
+  margin: 22px 4px 0;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--slate-500);
+}
+
+.update-note + .footer-note {
+  margin-top: 6px;
 }
 </style>

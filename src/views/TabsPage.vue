@@ -43,7 +43,6 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
 import { IonPage, IonTabs, IonTabBar, IonTabButton, IonIcon, IonLabel, IonRouterOutlet } from '@ionic/vue'
 import {
   ellipsisHorizontalOutline,
@@ -53,15 +52,14 @@ import {
   speedometerOutline,
 } from 'ionicons/icons'
 import { notificationState, refreshUnread } from '../services/notifications'
+import { onAppResume } from '../composables/useAppEvents'
 
 /*
  * The badge numbers arrive with the dashboard and list payloads, so the tab bar
  * itself makes no requests. Only the unread count is re-checked when the app
  * returns to the foreground.
  */
-onMounted(() => {
-  window.addEventListener('app-resumed', () => void refreshUnread())
-})
+onAppResume(() => void refreshUnread())
 </script>
 
 <style scoped>

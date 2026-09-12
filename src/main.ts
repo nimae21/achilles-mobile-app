@@ -3,8 +3,9 @@ import App from './App.vue'
 import router from './router';
 import { initializePush } from './services/push'
 import { initializeSession } from './services/session'
-import { clearCache } from './services/screen-cache'
+import { clearCache, hydrateCache } from './services/screen-cache'
 import { safeNotificationRedirect } from './services/notification-routing'
+import { installPerfConsole, perfEnabled, setPerfScreen } from './services/perf'
 
 import { IonicVue } from '@ionic/vue';
 
@@ -42,9 +43,37 @@ const app = createApp(App)
   .use(IonicVue)
   .use(router);
 
-initializeSession()
+/**
+ * Session and cache hydration both read from device storage, which is fast but
+ * must never be able to hold the app shell hostage: after the deadline the
+ * screens simply start from their skeletons and refresh from the API.
+ */
+async function withDeadline(work: Promise<unknown>, ms: number): Promise<void> {
+  await Promise.race([
+    work.then(
+      () => undefined,
+      () => undefined,
+    ),
+    new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  ])
+}
 
-router.isReady().then(() => {
-  app.mount('#app');
+async function boot(): Promise<void> {
+  installPerfConsole()
+  if (perfEnabled()) router.afterEach((to) => setPerfScreen(to.fullPath))
+
+  await withDeadline(
+    (async () => {
+      // The stored session decides which account's cache is allowed to load.
+      await initializeSession()
+      await hydrateCache()
+    })(),
+    1500,
+  )
+
+  await router.isReady()
+  app.mount('#app')
   initializePush(router)
-});
+}
+
+void boot()

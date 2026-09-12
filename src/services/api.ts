@@ -1,4 +1,5 @@
 import { Preferences } from '@capacitor/preferences'
+import { recordRequest } from './perf'
 
 const BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || 'https://achilleswearyourweakness.shop/api'
@@ -317,7 +318,13 @@ function clearSession(expectedVersion: number): Promise<boolean> {
   })
 }
 
-async function attempt<T>(path: string, options: RequestInit = {}, authenticated = true, timeoutMs = 15000): Promise<T> {
+async function attempt<T>(
+  path: string,
+  options: RequestInit = {},
+  authenticated = true,
+  timeoutMs = 15000,
+  signal?: AbortSignal,
+): Promise<T> {
   await sessionUpdates
   const requestVersion = sessionVersion
   const headers = new Headers(options.headers)
@@ -329,6 +336,16 @@ async function attempt<T>(path: string, options: RequestInit = {}, authenticated
   }
 
   const controller = new AbortController()
+  // The caller's signal (screen left, filters changed) and the timeout both
+  // end up on one controller so `fetch` is always cancelled exactly once.
+  let cancelled = false
+  const cancel = () => {
+    cancelled = true
+    controller.abort()
+  }
+  if (signal?.aborted) cancel()
+  else signal?.addEventListener('abort', cancel, { once: true })
+
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(`${BASE_URL}${path}`, { ...options, headers, signal: controller.signal })
@@ -354,6 +371,7 @@ async function attempt<T>(path: string, options: RequestInit = {}, authenticated
     return data as T
   } catch (error) {
     if (error instanceof ApiError) throw error
+    if (cancelled) throw new ApiError('Request cancelled.', 0)
     throw new ApiError(
       controller.signal.aborted
         ? 'The server took too long to respond. Pull down to refresh and try again.'
@@ -362,12 +380,26 @@ async function attempt<T>(path: string, options: RequestInit = {}, authenticated
     )
   } finally {
     clearTimeout(timeout)
+    signal?.removeEventListener('abort', cancel)
   }
 }
 
 interface RequestConfig {
   timeoutMs?: number
   retries?: number
+  /** Cancels the request when the screen leaves or newer filters replace it. */
+  signal?: AbortSignal
+}
+
+/**
+ * Identical GETs that overlap are served from the request already in flight.
+ * Two screens asking for the same list at the same moment (or a screen
+ * refreshing while the app resumes) cost one round trip instead of two.
+ */
+const inFlight = new Map<string, Promise<unknown>>()
+
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
 /**
@@ -384,15 +416,49 @@ async function request<T>(
   const method = (options.method ?? 'GET').toUpperCase()
   const retries = config.retries ?? (method === 'GET' ? 1 : 0)
   const timeoutMs = config.timeoutMs ?? 15000
+  const startedAt = now()
 
-  for (let attemptNumber = 0; ; attemptNumber++) {
-    try {
-      return await attempt<T>(path, options, authenticated, timeoutMs)
-    } catch (error) {
-      const retryable = error instanceof ApiError && error.status === 0
-      if (!retryable || attemptNumber >= retries) throw error
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attemptNumber + 1)))
+  if (method === 'GET') {
+    const shared = inFlight.get(path)
+    if (shared) {
+      recordRequest({ method, endpoint: path, status: 0, outcome: 'reused', ms: 0 })
+      return shared as Promise<T>
     }
+  }
+
+  const run = async (): Promise<T> => {
+    for (let attemptNumber = 0; ; attemptNumber++) {
+      try {
+        return await attempt<T>(path, options, authenticated, timeoutMs, config.signal)
+      } catch (error) {
+        // A cancelled request is not a failure worth retrying.
+        const retryable = error instanceof ApiError && error.status === 0 && !config.signal?.aborted
+        if (!retryable || attemptNumber >= retries) throw error
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attemptNumber + 1)))
+      }
+    }
+  }
+
+  const pending = run()
+  if (method === 'GET') {
+    inFlight.set(path, pending)
+    const release = () => inFlight.delete(path)
+    void pending.then(release, release)
+  }
+
+  try {
+    const result = await pending
+    recordRequest({ method, endpoint: path, status: 200, outcome: 'ok', ms: now() - startedAt })
+    return result
+  } catch (error) {
+    recordRequest({
+      method,
+      endpoint: path,
+      status: error instanceof ApiError ? error.status : 0,
+      outcome: config.signal?.aborted ? 'cancelled' : 'failed',
+      ms: now() - startedAt,
+    })
+    throw error
   }
 }
 
@@ -444,28 +510,31 @@ export const api = {
   },
 
   /** `fresh` bypasses the server-side 30s cache (used by pull-to-refresh). */
-  dashboard(fresh = false) {
-    return request<DashboardData>(`/dashboard${fresh ? '?fresh=1' : ''}`, {}, true, { timeoutMs: 30000 })
+  dashboard(fresh = false, signal?: AbortSignal) {
+    return request<DashboardData>(`/dashboard${fresh ? '?fresh=1' : ''}`, {}, true, {
+      timeoutMs: 30000,
+      signal,
+    })
   },
 
-  orders(params: { status?: string; search?: string; page?: number } = {}) {
-    return request<Page<OrderSummary, OrderCounts>>(`/orders${query(params)}`)
+  orders(params: { status?: string; search?: string; page?: number } = {}, signal?: AbortSignal) {
+    return request<Page<OrderSummary, OrderCounts>>(`/orders${query(params)}`, {}, true, { signal })
   },
   orderCounts() {
     return request<Record<string, number>>('/orders/counts')
   },
-  order(id: number | string) {
-    return request<OrderDetail>(`/orders/${encodeURIComponent(String(id))}`)
+  order(id: number | string, signal?: AbortSignal) {
+    return request<OrderDetail>(`/orders/${encodeURIComponent(String(id))}`, {}, true, { signal })
   },
 
-  approvals(params: { status?: string; search?: string; page?: number } = {}) {
-    return request<Page<ApprovalSummary, ApprovalCounts>>(`/approvals${query(params)}`)
+  approvals(params: { status?: string; search?: string; page?: number } = {}, signal?: AbortSignal) {
+    return request<Page<ApprovalSummary, ApprovalCounts>>(`/approvals${query(params)}`, {}, true, { signal })
   },
   approvalCounts() {
     return request<{ pending: number; approved: number; rejected: number }>('/approvals/counts')
   },
-  approval(id: number | string) {
-    return request<ApprovalDetail>(`/approvals/${encodeURIComponent(String(id))}`)
+  approval(id: number | string, signal?: AbortSignal) {
+    return request<ApprovalDetail>(`/approvals/${encodeURIComponent(String(id))}`, {}, true, { signal })
   },
   reviewApprovals(payload: { ids: number[]; decision: 'approved' | 'rejected'; reason?: string }) {
     return request<{ message: string; reviewed: number[]; failed: { id: number; message: string }[] }>(
@@ -476,14 +545,17 @@ export const api = {
     )
   },
 
-  users(params: { role?: string; status?: string; search?: string; page?: number } = {}) {
-    return request<Page<AccountSummary, AccountCounts>>(`/users${query(params)}`)
+  users(
+    params: { role?: string; status?: string; search?: string; page?: number } = {},
+    signal?: AbortSignal,
+  ) {
+    return request<Page<AccountSummary, AccountCounts>>(`/users${query(params)}`, {}, true, { signal })
   },
   userCounts() {
     return request<AccountCounts>('/users/counts')
   },
-  user(id: number | string) {
-    return request<AccountDetail>(`/users/${encodeURIComponent(String(id))}`)
+  user(id: number | string, signal?: AbortSignal) {
+    return request<AccountDetail>(`/users/${encodeURIComponent(String(id))}`, {}, true, { signal })
   },
   setUserStatus(id: number | string, isActive: boolean) {
     return request<{ message: string; user: AccountSummary }>(
@@ -491,11 +563,11 @@ export const api = {
       { method: 'PATCH', body: JSON.stringify({ is_active: isActive }) },
     )
   },
-  admin(id: number | string) {
-    return request<AdminDetail>(`/admins/${encodeURIComponent(String(id))}`)
+  admin(id: number | string, signal?: AbortSignal) {
+    return request<AdminDetail>(`/admins/${encodeURIComponent(String(id))}`, {}, true, { signal })
   },
-  invitations() {
-    return request<Page<Invitation>>('/admin-invitations')
+  invitations(params: { page?: number } = {}, signal?: AbortSignal) {
+    return request<Page<Invitation>>(`/admin-invitations${query(params)}`, {}, true, { signal })
   },
   inviteAdmin(email: string) {
     return request<{ message: string; invitation: Invitation }>('/admin-invitations', {
@@ -504,8 +576,8 @@ export const api = {
     })
   },
 
-  inventory(params: { filter?: string; search?: string; page?: number } = {}) {
-    return request<Page<InventoryRow>>(`/inventory${query(params)}`)
+  inventory(params: { filter?: string; search?: string; page?: number } = {}, signal?: AbortSignal) {
+    return request<Page<InventoryRow>>(`/inventory${query(params)}`, {}, true, { signal })
   },
 
   logs(
@@ -518,8 +590,9 @@ export const api = {
       to?: string
       page?: number
     } = {},
+    signal?: AbortSignal,
   ) {
-    return request<Page<AuditLog>>(`/activity-logs${query(params)}`)
+    return request<Page<AuditLog>>(`/activity-logs${query(params)}`, {}, true, { signal })
   },
   logFilters() {
     return request<{
@@ -528,12 +601,17 @@ export const api = {
       users: { id: number; name: string; role: string }[]
     }>('/activity-logs/filters')
   },
-  log(id: number | string) {
-    return request<AuditLog>(`/activity-logs/${encodeURIComponent(String(id))}`)
+  log(id: number | string, signal?: AbortSignal) {
+    return request<AuditLog>(`/activity-logs/${encodeURIComponent(String(id))}`, {}, true, { signal })
   },
 
-  notifications(params: { filter?: string; page?: number } = {}) {
-    return request<Page<AppNotification, { unread: number }>>(`/notifications${query(params)}`)
+  notifications(params: { filter?: string; page?: number } = {}, signal?: AbortSignal) {
+    return request<Page<AppNotification, { unread: number }>>(
+      `/notifications${query(params)}`,
+      {},
+      true,
+      { signal },
+    )
   },
   unreadCount() {
     return request<{ unread: number }>('/notifications/unread-count')

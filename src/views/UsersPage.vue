@@ -25,6 +25,7 @@
       <div class="page page--flush">
         <ListState
           :loading="loading"
+          :refreshing="refreshing"
           :error="error"
           :empty="items.length === 0"
           empty-title="No customers found"
@@ -57,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   IonContent,
@@ -69,6 +70,7 @@ import {
 } from '@ionic/vue'
 import { api, type AccountCounts, type AccountSummary } from '../services/api'
 import { usePaginated } from '../composables/usePaginated'
+import { onAppEvent, onAppResume } from '../composables/useAppEvents'
 import AppHeader from '../components/AppHeader.vue'
 import ListState from '../components/ListState.vue'
 import RoleSegment from '../components/RoleSegment.vue'
@@ -87,9 +89,13 @@ const chips = computed(() => [
   { key: 'suspended', label: 'Suspended', count: counts.value?.users.suspended ?? null },
 ])
 
-const { items, counts, loading, error, total, hasMore, load, loadMore, refresh } =
+const { items, counts, loading, refreshing, error, total, hasMore, load, loadMore, refresh, refreshIfStale } =
   usePaginated<AccountSummary, AccountCounts>(
-    (params) => api.users({ role: 'user', status: status.value, search: search.value.trim(), page: params.page }),
+    (params, signal) =>
+      api.users(
+        { role: 'user', status: status.value, search: search.value.trim(), page: params.page },
+        signal,
+      ),
     { filters: () => ({ status: status.value, search: search.value.trim() }), cacheKey: 'users' },
   )
 
@@ -97,10 +103,8 @@ function open(id: number): void {
   void router.push(`/tabs/users/${id}`)
 }
 
-onMounted(() => {
-  window.addEventListener('accounts-updated', () => void load())
-  window.addEventListener('app-resumed', () => void load())
-})
+onAppEvent('accounts-updated', () => void load())
+onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>

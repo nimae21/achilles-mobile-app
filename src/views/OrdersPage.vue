@@ -24,6 +24,7 @@
       <div class="page page--flush">
         <ListState
           :loading="loading"
+          :refreshing="refreshing"
           :error="error"
           :empty="items.length === 0"
           empty-title="No orders here"
@@ -66,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   IonContent,
@@ -79,6 +80,7 @@ import {
 import { api, type OrderCounts, type OrderSummary } from '../services/api'
 import { money, timeAgo, titleCase } from '../services/format'
 import { usePaginated } from '../composables/usePaginated'
+import { onAppEvent, onAppResume } from '../composables/useAppEvents'
 import AppHeader from '../components/AppHeader.vue'
 import ListState from '../components/ListState.vue'
 import SearchField from '../components/SearchField.vue'
@@ -99,9 +101,10 @@ const chips = computed(() => [
   { key: 'cancelled', label: 'Cancelled', count: counts.value?.cancelled ?? null },
 ])
 
-const { items, counts, loading, error, total, hasMore, load, loadMore, refresh } =
+const { items, counts, loading, refreshing, error, total, hasMore, load, loadMore, refresh, refreshIfStale } =
   usePaginated<OrderSummary, OrderCounts>(
-    (params) => api.orders({ status: status.value, search: search.value.trim(), page: params.page }),
+    (params, signal) =>
+      api.orders({ status: status.value, search: search.value.trim(), page: params.page }, signal),
     { filters: () => ({ status: status.value, search: search.value.trim() }), cacheKey: 'orders' },
   )
 
@@ -114,10 +117,8 @@ function open(id: number): void {
   void router.push(`/tabs/orders/${id}`)
 }
 
-onMounted(() => {
-  window.addEventListener('orders-updated', () => void load())
-  window.addEventListener('app-resumed', () => void load())
-})
+onAppEvent('orders-updated', () => void load())
+onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>

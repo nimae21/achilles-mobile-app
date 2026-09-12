@@ -92,6 +92,9 @@ export function routeForAlert(data: Record<string, unknown> | undefined | null):
   if (type.startsWith('order')) {
     return notificationOrderPath(data.order_id ?? meta.order_id)
   }
+  if (type.startsWith('refund')) {
+    return notificationOrderPath(data.order_id ?? meta.order_id)
+  }
   if (type.startsWith('approval')) {
     return numericPath(meta.approval_id, '/tabs/approvals') ?? '/tabs/approvals'
   }

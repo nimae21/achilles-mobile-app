@@ -60,6 +60,7 @@
       <div class="page page--flush">
         <ListState
           :loading="loading"
+          :refreshing="refreshing"
           :error="error"
           :empty="items.length === 0"
           empty-title="No matching activity"
@@ -108,6 +109,7 @@ import {
 import { api, type AuditLog } from '../services/api'
 import { initialsOf, timeAgo, titleCase } from '../services/format'
 import { usePaginated } from '../composables/usePaginated'
+import { onAppResume } from '../composables/useAppEvents'
 import AppHeader from '../components/AppHeader.vue'
 import ListState from '../components/ListState.vue'
 import SearchField from '../components/SearchField.vue'
@@ -129,29 +131,33 @@ const options = ref<{ categories: string[]; events: string[]; users: { id: numbe
 
 const categoryChips = computed(() => ['all', ...options.value.categories])
 
-const { items, loading, error, total, hasMore, load, loadMore, refresh } = usePaginated<AuditLog>(
-  (params) =>
-    api.logs({
-      category: category.value,
-      event: event.value,
-      user_id: userId.value ? Number(userId.value) : undefined,
-      search: search.value.trim(),
-      from: from.value || undefined,
-      to: to.value || undefined,
-      page: params.page,
-    }),
-  {
-    cacheKey: 'logs',
-    filters: () => ({
-      category: category.value,
-      event: event.value,
-      user_id: userId.value,
-      search: search.value.trim(),
-      from: from.value,
-      to: to.value,
-    }),
-  },
-)
+const { items, loading, refreshing, error, total, hasMore, load, loadMore, refresh, refreshIfStale } =
+  usePaginated<AuditLog>(
+    (params, signal) =>
+      api.logs(
+        {
+          category: category.value,
+          event: event.value,
+          user_id: userId.value ? Number(userId.value) : undefined,
+          search: search.value.trim(),
+          from: from.value || undefined,
+          to: to.value || undefined,
+          page: params.page,
+        },
+        signal,
+      ),
+    {
+      cacheKey: 'logs',
+      filters: () => ({
+        category: category.value,
+        event: event.value,
+        user_id: userId.value,
+        search: search.value.trim(),
+        from: from.value,
+        to: to.value,
+      }),
+    },
+  )
 
 function resetFilters(): void {
   event.value = ''
@@ -171,8 +177,9 @@ onMounted(async () => {
   } catch {
     // Filters degrade to search-only if the options call fails.
   }
-  window.addEventListener('app-resumed', () => void load())
 })
+
+onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>

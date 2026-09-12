@@ -200,7 +200,12 @@ export async function refreshPushStatus(askPermission = false): Promise<void> {
     let permission = await PushNotifications.checkPermissions()
     if (current !== epoch) return
     if (askPermission && ['prompt', 'prompt-with-rationale'].includes(permission.receive)) {
+      // Remember that this phone has been asked: a declined or dismissed
+      // prompt must not be pushed at the Super Admin on every sign-in.
+      await Preferences.set({ key: 'push_permission_asked', value: 'true' })
+      if (current !== epoch) return
       permission = await PushNotifications.requestPermissions()
+      if (current !== epoch) return
     }
     if (current !== epoch) return
     if (permission.receive === 'denied') {
@@ -226,6 +231,24 @@ export async function refreshPushStatus(askPermission = false): Promise<void> {
   } finally {
     if (current === epoch) pushState.busy = false
   }
+}
+
+/**
+ * Sign-in handoff. A Super Admin who has just signed in on this phone is asked
+ * for notification permission once, the phone registers with FCM and Laravel
+ * is handed the token. A phone where alerts were deliberately turned off is
+ * never re-registered behind the Super Admin's back.
+ */
+export async function ensurePushRegistered(): Promise<void> {
+  if (!isAndroid() || !buildEnabled()) return
+  if (pushState.busy) return
+
+  const [answered, asked] = await Promise.all([
+    Preferences.get({ key: 'push_opt_in' }),
+    Preferences.get({ key: 'push_permission_asked' }),
+  ])
+
+  await refreshPushStatus(!answered.value && asked.value !== 'true')
 }
 
 export async function disablePush(): Promise<void> {
@@ -307,11 +330,12 @@ export function initializePush(router: Router): void {
     void clearPushSession()
   })
   window.addEventListener('auth-changed', () => {
-    void refreshPushStatus()
+    // A fresh sign-in is exactly when the phone should be registered.
+    void ensurePushRegistered()
   })
   if (isAndroid() && buildEnabled()) {
     void setupListeners()
-      .then(() => refreshPushStatus())
+      .then(() => ensurePushRegistered())
       .catch(() => {
         pushState.status = 'error'
         pushState.message = 'Could not initialize phone notifications.'

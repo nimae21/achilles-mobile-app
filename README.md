@@ -41,6 +41,15 @@ submitted, admin invitation accepted, account suspended/reactivated, stock cross
 out-of-stock, and repeated failed logins. Alert copy never contains customer names or addresses because
 it also appears on lock screens.
 
+Refunds are alerted when they complete or fail, and a burst of same-kind alerts that has not been sent
+yet (a batch of admin submissions, a run of new orders) is folded into one summary such as
+"4 changes awaiting approval" that opens the queue. Every individual event still lands in the in-app
+notification centre.
+
+Signing in registers the phone: the app asks for notification permission once per install, registers
+with FCM and hands the token to Laravel bound to that session. Turning alerts off in Settings is
+respected on later sign-ins - see `FIREBASE_SETUP.md`.
+
 ## API surface used by the app
 
 All routes require the Super Admin bearer token.
@@ -81,6 +90,38 @@ keep working). Display name: `Achilles Super Admin`.
 - `npx vitest run`
 - Start Vite, then `npm run test:e2e` (every API call is mocked; no live records are touched)
 - Backend: `php artisan test` and `php vendor/bin/phpunit -c phpunit-governance.xml` in `../caps`
+
+## Performance model
+
+The API lives on a remote host, so every round trip costs real time. The app is built so a
+screen never waits for one:
+
+- **Stale-while-revalidate.** Each list (orders, approvals, customers, admins, invitations,
+  inventory, logs, notifications) and the dashboard keep their last payload and repaint it
+  immediately, then revalidate in the background. A failed refresh keeps the data on screen with a
+  "couldn't refresh" notice and a retry, and the payload that is on screen is never cleared.
+- **Two-layer cache.** `src/services/screen-cache.ts` keeps entries in memory for the session and
+  mirrors them into Capacitor Preferences, so even a cold start paints the last snapshot instead of
+  a full skeleton. Entries are filed per signed-in account, cleared on sign-out, and capped in size
+  and count.
+- **No duplicate work.** Identical GETs that overlap share one request
+  (`src/services/api.ts`), each screen has a single owner of its data (`usePaginated`), and an
+  `app-resumed` event only re-fetches screens whose data has aged past the cache window.
+- **Cancellation.** Changing filters, searching or leaving a screen aborts the request it replaces
+  and drops any response that arrives too late to matter.
+
+### Seeing what a screen costs
+
+Development builds only: open the console (`npm run dev`) and use
+
+```
+__achillesPerf.report()    // requests, reused, failures and time per screen
+__achillesPerf.entries     // every raw sample: endpoint, status, duration
+__achillesPerf.reset()     // start a clean measurement
+```
+
+Each navigation prints a one-line summary of the screen you left, and every request logs its
+endpoint and duration. Nothing is recorded in production builds.
 
 ## Design
 

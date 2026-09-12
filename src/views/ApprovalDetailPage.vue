@@ -52,7 +52,9 @@
               <div class="section-head"><h2 class="section-title">Images</h2></div>
               <div class="thumbs">
                 <button v-for="image in approval.images" :key="image.path" type="button" @click="openImage(image.url)">
-                  <img :src="image.url" alt="Proposed product image" loading="lazy" />
+                  <!-- Thumbnails decode off the main thread and only load for
+                       the images the reviewer actually scrolls to. -->
+                  <img :src="image.url" alt="Proposed product image" loading="lazy" decoding="async" />
                 </button>
               </div>
             </section>

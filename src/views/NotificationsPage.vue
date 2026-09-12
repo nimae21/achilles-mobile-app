@@ -34,6 +34,7 @@
       <div class="page page--flush">
         <ListState
           :loading="loading"
+          :refreshing="refreshing"
           :error="error"
           :empty="items.length === 0"
           empty-title="No notifications"
@@ -71,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   IonButton,
@@ -99,6 +100,7 @@ import { routeForAlert, safeRoute } from '../services/notification-routing'
 import { setUnread } from '../services/notifications'
 import { toast } from '../services/ui'
 import { usePaginated } from '../composables/usePaginated'
+import { onAppEvent, onAppResume } from '../composables/useAppEvents'
 import AppHeader from '../components/AppHeader.vue'
 import ListState from '../components/ListState.vue'
 
@@ -112,9 +114,9 @@ const chips = [
   { key: 'unread', label: 'Unread' },
 ]
 
-const { items, counts, loading, error, hasMore, load, loadMore, refresh } =
+const { items, counts, loading, refreshing, error, hasMore, load, loadMore, refresh, refreshIfStale } =
   usePaginated<AppNotification, { unread: number }>(
-    (params) => api.notifications({ filter: filter.value, page: params.page }),
+    (params, signal) => api.notifications({ filter: filter.value, page: params.page }, signal),
     { filters: () => ({ filter: filter.value }), cacheKey: 'notifications' },
   )
 
@@ -171,11 +173,9 @@ async function markAll(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  // A pushed alert is the one case where the list has to be re-fetched.
-  window.addEventListener('notifications-updated', () => void load())
-  window.addEventListener('app-resumed', () => void load())
-})
+// A pushed alert is the one case where the list has to be re-fetched.
+onAppEvent('notifications-updated', () => void load())
+onAppResume(() => void refreshIfStale())
 
 </script>
 

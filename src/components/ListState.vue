@@ -25,6 +25,12 @@
   </div>
 
   <template v-else>
+    <!-- Background revalidation: the screen is already usable and readable,
+         this only says that fresher records are on the way. -->
+    <div v-if="refreshing" class="refresh-line" role="status" aria-live="polite">
+      <ion-spinner name="crescent" />
+      <span>Updating...</span>
+    </div>
     <div v-if="error" class="notice notice--brand" style="margin-bottom: 12px">
       <ion-icon :icon="cloudOfflineOutline" />
       <span>Couldn't refresh just now — showing the last loaded data.</span>
@@ -34,12 +40,13 @@
 </template>
 
 <script setup lang="ts">
-import { IonIcon } from '@ionic/vue'
+import { IonIcon, IonSpinner } from '@ionic/vue'
 import { alertCircleOutline, cloudOfflineOutline, fileTrayOutline } from 'ionicons/icons'
 
 withDefaults(
   defineProps<{
     loading?: boolean
+    refreshing?: boolean
     error?: string
     empty?: boolean
     emptyTitle?: string
@@ -50,6 +57,7 @@ withDefaults(
   }>(),
   {
     loading: false,
+    refreshing: false,
     error: '',
     empty: false,
     emptyTitle: 'Nothing here yet',
@@ -62,3 +70,22 @@ withDefaults(
 
 defineEmits<{ retry: [] }>()
 </script>
+
+<style scoped>
+.refresh-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 4px 10px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--slate-500);
+}
+
+.refresh-line ion-spinner {
+  width: 13px;
+  height: 13px;
+  color: var(--slate-400);
+}
+</style>

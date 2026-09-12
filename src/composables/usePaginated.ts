@@ -1,4 +1,4 @@
-import { onMounted, ref, shallowRef, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { Page } from '../services/api'
 import { readCache, writeCache } from '../services/screen-cache'
 
@@ -7,7 +7,7 @@ type Filters = Record<string, unknown>
 interface Options {
   filters?: () => Filters
   debounceMs?: number
-  /** Enables the in-memory screen cache (60s by default). */
+  /** Enables the screen cache (60s in memory, also restored on cold start). */
   cacheKey?: string
   cacheMs?: number
 }
@@ -17,23 +17,27 @@ type CachedPage<T, C> = {
   counts?: C
   total: number
   lastPage: number
+  savedAt: number
 }
 
 /**
  * Shared paging for every list screen: first load, pull-to-refresh, infinite
  * scroll and debounced filters.
  *
- * Two behaviours matter for a slow remote backend:
- *  - a warm cache paints instantly and then revalidates in the background, and
- *  - a failed refresh keeps the last data on screen instead of blanking it.
+ * Three behaviours matter for a slow remote backend:
+ *  - a warm cache paints instantly and then revalidates in the background,
+ *  - a failed refresh keeps the last data on screen instead of blanking it, and
+ *  - a response that arrives after newer filters were chosen is dropped (and
+ *    its request cancelled), so the list can never show stale results.
  */
 export function usePaginated<T, C = Record<string, number>>(
-  fetcher: (params: Filters & { page: number }) => Promise<Page<T, C>>,
+  fetcher: (params: Filters & { page: number }, signal: AbortSignal) => Promise<Page<T, C>>,
   options: Options = {},
 ) {
   const items = shallowRef<T[]>([])
   const counts = shallowRef<C | undefined>(undefined)
   const loading = ref(true)
+  const refreshing = ref(false)
   const loadingMore = ref(false)
   const error = ref('')
   const stale = ref(false)
@@ -43,6 +47,11 @@ export function usePaginated<T, C = Record<string, number>>(
   const hasMore = ref(false)
 
   const cacheMs = options.cacheMs ?? 60_000
+
+  /** Each load takes a ticket; only the newest ticket may write to the screen. */
+  let sequence = 0
+  let inFlight: AbortController | undefined
+  const lastLoadedAt = ref(0)
 
   function filterSnapshot(): Filters {
     return options.filters ? options.filters() : {}
@@ -59,6 +68,7 @@ export function usePaginated<T, C = Record<string, number>>(
       counts: counts.value,
       total: total.value,
       lastPage: lastPage.value,
+      savedAt: Date.now(),
     }
     writeCache(cacheId(), entry)
   }
@@ -75,16 +85,27 @@ export function usePaginated<T, C = Record<string, number>>(
     hasMore.value = false
     stale.value = true
     loading.value = false
+    // Freshness is measured from when the data was fetched, not when it was
+    // read back, so a cold start still revalidates immediately.
+    lastLoadedAt.value = cached.savedAt
     return true
   }
 
   async function load(): Promise<void> {
+    const ticket = ++sequence
+    inFlight?.abort()
+    const controller = new AbortController()
+    inFlight = controller
+
     // Only show the skeleton when there is nothing to display yet.
-    loading.value = items.value.length === 0
+    const hasData = items.value.length > 0
+    loading.value = !hasData
+    refreshing.value = hasData
     const snapshot = filterSnapshot()
 
     try {
-      const result = await fetcher({ ...snapshot, page: 1 })
+      const result = await fetcher({ ...snapshot, page: 1 }, controller.signal)
+      if (ticket !== sequence) return
       items.value = result.data
       counts.value = result.counts
       page.value = result.current_page
@@ -93,8 +114,11 @@ export function usePaginated<T, C = Record<string, number>>(
       hasMore.value = result.current_page < result.last_page
       error.value = ''
       stale.value = false
+      lastLoadedAt.value = Date.now()
       cacheCurrent()
     } catch (caught) {
+      // A superseded or cancelled request says nothing about the current view.
+      if (ticket !== sequence) return
       error.value = (caught as Error).message
       stale.value = items.value.length > 0
       if (items.value.length === 0) {
@@ -102,7 +126,11 @@ export function usePaginated<T, C = Record<string, number>>(
         hasMore.value = false
       }
     } finally {
-      loading.value = false
+      if (ticket === sequence) {
+        loading.value = false
+        refreshing.value = false
+        inFlight = undefined
+      }
     }
   }
 
@@ -112,9 +140,14 @@ export function usePaginated<T, C = Record<string, number>>(
       complete()
       return
     }
+    const ticket = sequence
     loadingMore.value = true
     try {
-      const result = await fetcher({ ...filterSnapshot(), page: page.value + 1 })
+      const result = await fetcher(
+        { ...filterSnapshot(), page: page.value + 1 },
+        new AbortController().signal,
+      )
+      if (ticket !== sequence) return
       items.value = [...items.value, ...result.data]
       page.value = result.current_page
       lastPage.value = result.last_page
@@ -131,6 +164,18 @@ export function usePaginated<T, C = Record<string, number>>(
   async function refresh(event?: CustomEvent): Promise<void> {
     await load()
     ;(event?.target as { complete?: () => void } | undefined)?.complete?.()
+  }
+
+  /**
+   * Revalidates only when the screen's data has aged past `minAgeMs`. Used by
+   * the resume handler: a tab visited seconds ago does not re-fetch just
+   * because the phone was unlocked, while data older than the cache window is
+   * refreshed straight away.
+   */
+  async function refreshIfStale(minAgeMs = cacheMs): Promise<void> {
+    if (loading.value || refreshing.value || loadingMore.value) return
+    if (Date.now() - lastLoadedAt.value < minAgeMs) return
+    await load()
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -152,10 +197,17 @@ export function usePaginated<T, C = Record<string, number>>(
     void load()
   })
 
+  onBeforeUnmount(() => {
+    // The screen is gone: nothing it asked for may come back and write to it.
+    sequence++
+    inFlight?.abort()
+  })
+
   return {
     items,
     counts,
     loading,
+    refreshing,
     loadingMore,
     error,
     stale,
@@ -163,8 +215,10 @@ export function usePaginated<T, C = Record<string, number>>(
     lastPage,
     total,
     hasMore,
+    lastLoadedAt,
     load,
     loadMore,
     refresh,
+    refreshIfStale,
   }
 }

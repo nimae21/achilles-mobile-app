@@ -22,6 +22,7 @@
 
         <ListState
           :loading="loading"
+          :refreshing="refreshing"
           :error="error"
           :empty="invitations.length === 0"
           empty-title="No pending invitations"
@@ -59,7 +60,6 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   IonButton,
@@ -75,6 +75,7 @@ import { mailOutline } from 'ionicons/icons'
 import { api, type Invitation } from '../services/api'
 import { dateLabel } from '../services/format'
 import { usePaginated } from '../composables/usePaginated'
+import { onAppEvent, onAppResume } from '../composables/useAppEvents'
 import AppHeader from '../components/AppHeader.vue'
 import ListState from '../components/ListState.vue'
 import StatusPill from '../components/StatusPill.vue'
@@ -82,14 +83,13 @@ import StatusPill from '../components/StatusPill.vue'
 const router = useRouter()
 const go = (path: string) => void router.push(path)
 
-const { items: invitations, loading, error, total, hasMore, load, loadMore, refresh } = usePaginated<Invitation>(
-  (params) => api.invitations().then((page) => ({ ...page, page: params.page })),
-)
+const { items: invitations, loading, refreshing, error, total, hasMore, load, loadMore, refresh, refreshIfStale } =
+  usePaginated<Invitation>((params, signal) => api.invitations({ page: params.page }, signal), {
+    cacheKey: 'invitations',
+  })
 
-onMounted(() => {
-  window.addEventListener('accounts-updated', () => void load())
-  window.addEventListener('app-resumed', () => void load())
-})
+onAppEvent('accounts-updated', () => void load())
+onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>

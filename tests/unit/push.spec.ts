@@ -80,6 +80,45 @@ describe('Android notification registration', () => {
     expect(pushState.status).toBe('off')
     expect(mocks.register).not.toHaveBeenCalled()
   })
+  it('asks for permission on the first sign-in and registers the phone', async () => {
+    const { ensurePushRegistered, pushState } = await import('../../src/services/push')
+    await ensurePushRegistered()
+    expect(mocks.requestPermissions).toHaveBeenCalledOnce()
+    expect(mocks.register).toHaveBeenCalledOnce()
+    expect(mocks.registerPushDevice).toHaveBeenCalledWith(
+      '9d8d7fd5-9144-4609-8e08-4f58d159bdab',
+      'test-firebase-token',
+    )
+    expect(pushState.status).toBe('registered')
+  })
+  it('never asks again once the Super Admin has turned alerts off', async () => {
+    mocks.get.mockImplementation(async ({ key }) => ({
+      value: key === 'push_installation_id' ? '9d8d7fd5-9144-4609-8e08-4f58d159bdab' : key === 'push_opt_in' ? 'false' : null,
+    }))
+    const { ensurePushRegistered, pushState } = await import('../../src/services/push')
+    await ensurePushRegistered()
+    expect(mocks.requestPermissions).not.toHaveBeenCalled()
+    expect(mocks.register).not.toHaveBeenCalled()
+    expect(pushState.status).toBe('off')
+  })
+  it('asks once per install, even after the prompt was dismissed', async () => {
+    mocks.get.mockImplementation(async ({ key }) => ({
+      value: key === 'push_installation_id' ? '9d8d7fd5-9144-4609-8e08-4f58d159bdab' : key === 'push_permission_asked' ? 'true' : null,
+    }))
+    const { ensurePushRegistered, pushState } = await import('../../src/services/push')
+    await ensurePushRegistered()
+    expect(mocks.requestPermissions).not.toHaveBeenCalled()
+    expect(mocks.register).not.toHaveBeenCalled()
+    expect(pushState.status).toBe('off')
+  })
+  it('registers an already signed-in phone when the app starts', async () => {
+    const router = { push: vi.fn(), replace: vi.fn() }
+    const { initializePush, pushState } = await import('../../src/services/push')
+    initializePush(router as any)
+    await flushPromises()
+    expect(mocks.registerPushDevice).toHaveBeenCalledOnce()
+    expect(pushState.status).toBe('registered')
+  })
   it('reuses listeners and reports the worker being offline', async () => {
     mocks.getPushStatus.mockResolvedValue({ configured: true, registered: false, worker_running: false })
     const { refreshPushStatus, pushState } = await import('../../src/services/push')
@@ -218,6 +257,8 @@ describe('notification route validation', () => {
     expect(routeForAlert({ type: 'account_reactivated', meta: { user_id: 3, role: 'user' } })).toBe('/tabs/users/3')
     expect(routeForAlert({ type: 'inventory_low_stock' })).toBe('/tabs/inventory')
     expect(routeForAlert({ type: 'security_alert' })).toBe('/tabs/logs')
+    expect(routeForAlert({ type: 'refund_completed', order_id: '9' })).toBe('/tabs/orders/9')
+    expect(routeForAlert({ type: 'refund_failed', meta: { order_id: 9 } })).toBe('/tabs/orders/9')
     expect(routeForAlert({ type: 'unknown_event' })).toBeNull()
     // An explicit route from the backend always wins when it is allowed.
     expect(routeForAlert({ type: 'order_paid', route: '/tabs/logs/2', order_id: '9' })).toBe('/tabs/logs/2')
