@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from '@ionic/vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { Preferences } from '@capacitor/preferences'
+import { api } from '../services/api'
 import TabsPage from '../views/TabsPage.vue'
 import { safeNotificationRedirect } from '../services/notification-routing'
 
@@ -52,8 +52,8 @@ const router = createRouter({
 // Auth guard: the token is the only thing that matters here. Every endpoint is
 // still authorised server-side, so this is purely a navigation convenience.
 router.beforeEach(async (to) => {
-  const { value: token } = await Preferences.get({ key: 'auth_token' })
-  const isAuthenticated = !!token
+  const isAuthenticated = await api.isAuthenticated()
+
 
   if (to.meta.requiresAuth && !isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } }

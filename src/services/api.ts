@@ -1,4 +1,4 @@
-import { Preferences } from '@capacitor/preferences'
+import { SecureStorage } from './secure-storage'
 import { recordRequest } from './perf'
 
 const BASE_URL = (
@@ -311,8 +311,8 @@ function clearSession(expectedVersion: number): Promise<boolean> {
   return updateSession(async () => {
     if (expectedVersion !== sessionVersion) return false
     sessionVersion++
-    await Preferences.remove({ key: 'auth_token' })
-    await Preferences.remove({ key: 'auth_user' })
+    await SecureStorage.remove({ key: 'auth_token' })
+    await SecureStorage.remove({ key: 'auth_user' })
     window.dispatchEvent(new Event('auth-cleared'))
     return true
   })
@@ -331,7 +331,7 @@ async function attempt<T>(
   headers.set('Accept', 'application/json')
   if (options.body) headers.set('Content-Type', 'application/json')
   if (authenticated) {
-    const { value } = await Preferences.get({ key: 'auth_token' })
+    const { value } = await SecureStorage.get({ key: 'auth_token' })
     if (value) headers.set('Authorization', `Bearer ${value}`)
   }
 
@@ -472,8 +472,8 @@ export const api = {
     if (!data.token) throw new ApiError('The server did not return a login session.', 0)
     await updateSession(async () => {
       sessionVersion++
-      await Preferences.set({ key: 'auth_token', value: data.token })
-      await Preferences.set({ key: 'auth_user', value: JSON.stringify(data.user) })
+      await SecureStorage.set({ key: 'auth_token', value: data.token })
+      await SecureStorage.set({ key: 'auth_user', value: JSON.stringify(data.user) })
       window.dispatchEvent(new Event('auth-changed'))
     })
     return data
@@ -490,7 +490,7 @@ export const api = {
   },
 
   async getUser(): Promise<SessionUser | null> {
-    const { value } = await Preferences.get({ key: 'auth_user' })
+    const { value } = await SecureStorage.get({ key: 'auth_user' })
     if (!value) return null
     try {
       return JSON.parse(value) as SessionUser
@@ -501,7 +501,7 @@ export const api = {
 
   async isAuthenticated(): Promise<boolean> {
     await sessionUpdates
-    const { value } = await Preferences.get({ key: 'auth_token' })
+    const { value } = await SecureStorage.get({ key: 'auth_token' })
     return !!value
   },
 

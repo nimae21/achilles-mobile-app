@@ -43,11 +43,7 @@ const app = createApp(App)
   .use(IonicVue)
   .use(router);
 
-/**
- * Session and cache hydration both read from device storage, which is fast but
- * must never be able to hold the app shell hostage: after the deadline the
- * screens simply start from their skeletons and refresh from the API.
- */
+/** Bound session restoration so storage cannot indefinitely delay startup. */
 async function withDeadline(work: Promise<unknown>, ms: number): Promise<void> {
   await Promise.race([
     work.then(
@@ -62,14 +58,9 @@ async function boot(): Promise<void> {
   installPerfConsole()
   if (perfEnabled()) router.afterEach((to) => setPerfScreen(to.fullPath))
 
-  await withDeadline(
-    (async () => {
-      // The stored session decides which account's cache is allowed to load.
-      await initializeSession()
-      await hydrateCache()
-    })(),
-    1500,
-  )
+  // Legacy cache cleanup does not load any screen data or delay rendering.
+  void hydrateCache().catch(() => undefined)
+  await withDeadline(initializeSession(), 1500)
 
   await router.isReady()
   app.mount('#app')

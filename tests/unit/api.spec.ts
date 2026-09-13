@@ -2,6 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const preferences = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), remove: vi.fn() }))
 vi.mock('@capacitor/preferences', () => ({ Preferences: preferences }))
+vi.mock('../../src/services/secure-storage', () => ({ SecureStorage: preferences }))
 import { api, ApiError } from '../../src/services/api'
 
 const fetchMock = vi.fn()

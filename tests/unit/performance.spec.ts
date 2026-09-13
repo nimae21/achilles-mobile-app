@@ -18,6 +18,7 @@ const preferences = vi.hoisted(() => {
 })
 
 vi.mock('@capacitor/preferences', () => ({ Preferences: preferences }))
+vi.mock('../../src/services/secure-storage', () => ({ SecureStorage: preferences }))
 
 import { ApiError, api } from '../../src/services/api'
 
@@ -97,7 +98,19 @@ describe('request cancellation', () => {
 })
 
 describe('on-device screen cache', () => {
-  it('restores screens from the last session for the same account', async () => {
+  it('deletes legacy plaintext snapshots without reading their payloads', async () => {
+    vi.resetModules()
+    preferences.values.set('screen_cache_entry:old:orders', JSON.stringify({ value: { address: 'private' }, savedAt: Date.now() }))
+    preferences.values.set('screen_cache_scope', 'old')
+    preferences.values.set('push_opt_in', 'true')
+    const cache = await import('../../src/services/screen-cache')
+    await cache.hydrateCache()
+    expect(preferences.get).not.toHaveBeenCalled()
+    expect([...preferences.values.keys()]).toEqual(['push_opt_in'])
+    expect(cache.readCache('orders', 60_000)).toBeNull()
+  })
+
+  it('keeps screen data in memory and never restores it after a cold start', async () => {
     const first = await import('../../src/services/screen-cache')
     first.setCacheScope(first.cacheScopeFor('root@example.test'))
     first.writeCache('dashboard', { total: 7 })
@@ -110,7 +123,8 @@ describe('on-device screen cache', () => {
 
     second.setCacheScope(second.cacheScopeFor('root@example.test'))
     await second.hydrateCache()
-    expect(second.readCache<{ total: number }>('dashboard', 60_000)).toEqual({ total: 7 })
+    expect(second.readCache('dashboard', 60_000)).toBeNull()
+    expect(preferences.set).not.toHaveBeenCalled()
   })
 
   it('never surfaces the screens of a different account, even after a cold start', async () => {
