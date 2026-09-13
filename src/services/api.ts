@@ -1,12 +1,28 @@
 import { SecureStorage } from './secure-storage'
 import { recordRequest } from './perf'
+import { requestPolicy } from '../config/runtime'
 
 const BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || 'https://achilleswearyourweakness.shop/api'
 ).replace(/\/$/, '')
 
+export type ApiFailureKind =
+  | 'http'
+  | 'authentication'
+  | 'rate_limit'
+  | 'cold_backend'
+  | 'offline'
+  | 'timeout'
+  | 'cancelled'
+  | 'response'
+
 export class ApiError extends Error {
-  constructor(message: string, public status: number) {
+  constructor(
+    message: string,
+    public status: number,
+    public kind: ApiFailureKind = 'http',
+    public retryAfterMs?: number,
+  ) {
     super(message)
   }
 }
@@ -311,18 +327,39 @@ function clearSession(expectedVersion: number): Promise<boolean> {
   return updateSession(async () => {
     if (expectedVersion !== sessionVersion) return false
     sessionVersion++
-    await SecureStorage.remove({ key: 'auth_token' })
-    await SecureStorage.remove({ key: 'auth_user' })
+    // Both in-memory values are cleared even if Android Keystore cleanup fails.
+    await Promise.allSettled([
+      SecureStorage.remove({ key: 'auth_token' }),
+      SecureStorage.remove({ key: 'auth_user' }),
+    ])
     window.dispatchEvent(new Event('auth-cleared'))
     return true
   })
+}
+
+function retryAfterMilliseconds(response: Response): number | undefined {
+  const value = response.headers?.get?.('Retry-After')?.trim()
+  if (!value) return undefined
+
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1_000)
+
+  const at = Date.parse(value)
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined
+}
+
+function failureKind(status: number): ApiFailureKind {
+  if (status === 401 || status === 403) return 'authentication'
+  if (status === 429) return 'rate_limit'
+  if ([502, 503, 504].includes(status)) return 'cold_backend'
+  return 'http'
 }
 
 async function attempt<T>(
   path: string,
   options: RequestInit = {},
   authenticated = true,
-  timeoutMs = 15000,
+  timeoutMs = requestPolicy.timeoutMs,
   signal?: AbortSignal,
 ): Promise<T> {
   await sessionUpdates
@@ -336,9 +373,8 @@ async function attempt<T>(
   }
 
   const controller = new AbortController()
-  // The caller's signal (screen left, filters changed) and the timeout both
-  // end up on one controller so `fetch` is always cancelled exactly once.
   let cancelled = false
+  let timedOut = false
   const cancel = () => {
     cancelled = true
     controller.abort()
@@ -346,37 +382,60 @@ async function attempt<T>(
   if (signal?.aborted) cancel()
   else signal?.addEventListener('abort', cancel, { once: true })
 
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
   try {
     const response = await fetch(`${BASE_URL}${path}`, { ...options, headers, signal: controller.signal })
     if (response.status === 401 && authenticated && (await clearSession(requestVersion))) {
       window.dispatchEvent(new Event('auth-expired'))
     }
+
     const body = await response.text()
     let data: unknown
     try {
       data = body ? JSON.parse(body) : {}
     } catch {
-      throw new ApiError('The server returned an unexpected response. Please try again.', response.status)
+      throw new ApiError(
+        'The server returned an unexpected response. Please try again.',
+        response.status,
+        'response',
+      )
     }
 
     if (!response.ok) {
-      const message =
-        (data as { message?: string })?.message ||
-        (response.status === 403
-          ? 'You do not have permission to view this.'
-          : 'Unable to complete the request.')
-      throw new ApiError(message, response.status)
+      const kind = failureKind(response.status)
+      const fallback =
+        kind === 'authentication'
+          ? response.status === 403
+            ? 'You do not have permission to view this.'
+            : 'Your session has expired. Please sign in again.'
+          : kind === 'rate_limit'
+            ? 'Too many requests. Please wait a moment and try again.'
+            : kind === 'cold_backend'
+              ? 'The server is starting up. Please try again shortly.'
+              : 'Unable to complete the request.'
+      const message = (data as { message?: string })?.message || fallback
+      throw new ApiError(message, response.status, kind, retryAfterMilliseconds(response))
     }
+
     return data as T
   } catch (error) {
     if (error instanceof ApiError) throw error
-    if (cancelled) throw new ApiError('Request cancelled.', 0)
+    if (cancelled) throw new ApiError('Request cancelled.', 0, 'cancelled')
+    if (timedOut) {
+      throw new ApiError(
+        'The server took too long to respond. Pull down to refresh and try again.',
+        0,
+        'timeout',
+      )
+    }
     throw new ApiError(
-      controller.signal.aborted
-        ? 'The server took too long to respond. Pull down to refresh and try again.'
-        : 'Unable to reach the Achilles server. Check your connection and try again.',
+      'Unable to reach the Achilles server. Check your connection and try again.',
       0,
+      'offline',
     )
   } finally {
     clearTimeout(timeout)
@@ -387,26 +446,41 @@ async function attempt<T>(
 interface RequestConfig {
   timeoutMs?: number
   retries?: number
-  /** Cancels the request when the screen leaves or newer filters replace it. */
   signal?: AbortSignal
 }
 
-/**
- * Identical GETs that overlap are served from the request already in flight.
- * Two screens asking for the same list at the same moment (or a screen
- * refreshing while the app resumes) cost one round trip instead of two.
- */
 const inFlight = new Map<string, Promise<unknown>>()
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
-/**
- * A GET is retried once: mobile networks drop requests often and GETs are safe
- * to repeat. Mutations are never retried automatically - a duplicated approval
- * decision or account suspension would be a real problem.
- */
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new ApiError('Request cancelled.', 0, 'cancelled'))
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, delayMs)
+    function done() {
+      signal?.removeEventListener('abort', cancel)
+      resolve()
+    }
+    function cancel() {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+      reject(new ApiError('Request cancelled.', 0, 'cancelled'))
+    }
+    signal?.addEventListener('abort', cancel, { once: true })
+  })
+}
+
+function retryDelay(error: ApiError, attemptNumber: number): number | null {
+  if (error.kind === 'authentication' || error.kind === 'cancelled') return null
+  if (!['offline', 'timeout', 'rate_limit', 'cold_backend'].includes(error.kind)) return null
+
+  const delay = error.retryAfterMs ?? requestPolicy.retryBaseMs * (attemptNumber + 1)
+  return delay <= requestPolicy.maxRetryAfterMs ? delay : null
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -414,12 +488,13 @@ async function request<T>(
   config: RequestConfig = {},
 ): Promise<T> {
   const method = (options.method ?? 'GET').toUpperCase()
-  const retries = config.retries ?? (method === 'GET' ? 1 : 0)
-  const timeoutMs = config.timeoutMs ?? 15000
+  const retries = config.retries ?? (method === 'GET' ? requestPolicy.getRetries : 0)
+  const timeoutMs = config.timeoutMs ?? requestPolicy.timeoutMs
   const startedAt = now()
+  const inFlightKey = `${sessionVersion}:${authenticated ? 'auth' : 'public'}:${path}`
 
   if (method === 'GET') {
-    const shared = inFlight.get(path)
+    const shared = inFlight.get(inFlightKey)
     if (shared) {
       recordRequest({ method, endpoint: path, status: 0, outcome: 'reused', ms: 0 })
       return shared as Promise<T>
@@ -431,18 +506,20 @@ async function request<T>(
       try {
         return await attempt<T>(path, options, authenticated, timeoutMs, config.signal)
       } catch (error) {
-        // A cancelled request is not a failure worth retrying.
-        const retryable = error instanceof ApiError && error.status === 0 && !config.signal?.aborted
-        if (!retryable || attemptNumber >= retries) throw error
-        await new Promise((resolve) => setTimeout(resolve, 350 * (attemptNumber + 1)))
+        const delay =
+          method === 'GET' && error instanceof ApiError && !config.signal?.aborted
+            ? retryDelay(error, attemptNumber)
+            : null
+        if (delay === null || attemptNumber >= retries) throw error
+        await waitForRetry(delay, config.signal)
       }
     }
   }
 
   const pending = run()
   if (method === 'GET') {
-    inFlight.set(path, pending)
-    const release = () => inFlight.delete(path)
+    inFlight.set(inFlightKey, pending)
+    const release = () => inFlight.delete(inFlightKey)
     void pending.then(release, release)
   }
 
@@ -490,13 +567,28 @@ export const api = {
   },
 
   async getUser(): Promise<SessionUser | null> {
+    const expectedVersion = sessionVersion
     const { value } = await SecureStorage.get({ key: 'auth_user' })
     if (!value) return null
     try {
-      return JSON.parse(value) as SessionUser
+      const user = JSON.parse(value) as Partial<SessionUser>
+      if (
+        !user ||
+        typeof user.name !== 'string' ||
+        typeof user.email !== 'string' ||
+        !['user', 'admin', 'super_admin'].includes(String(user.role))
+      ) {
+        throw new Error('Invalid stored profile')
+      }
+      return user as SessionUser
     } catch {
+      await clearSession(expectedVersion)
       return null
     }
+  },
+
+  async clearLocalSession(): Promise<void> {
+    await clearSession(sessionVersion)
   },
 
   async isAuthenticated(): Promise<boolean> {
@@ -511,10 +603,7 @@ export const api = {
 
   /** `fresh` bypasses the server-side 30s cache (used by pull-to-refresh). */
   dashboard(fresh = false, signal?: AbortSignal) {
-    return request<DashboardData>(`/dashboard${fresh ? '?fresh=1' : ''}`, {}, true, {
-      timeoutMs: 30000,
-      signal,
-    })
+    return request<DashboardData>(`/dashboard${fresh ? '?fresh=1' : ''}`, {}, true, { signal })
   },
 
   orders(params: { status?: string; search?: string; page?: number } = {}, signal?: AbortSignal) {
@@ -541,7 +630,7 @@ export const api = {
       '/approvals/review',
       { method: 'POST', body: JSON.stringify(payload) },
       true,
-      { timeoutMs: 45000 },
+      { timeoutMs: requestPolicy.longTimeoutMs },
     )
   },
 

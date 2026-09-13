@@ -8,9 +8,17 @@ export const session = reactive({
   ready: false,
 })
 
+let restoration: Promise<void> | undefined
+let listenersInstalled = false
+
 export async function hydrateSession(): Promise<void> {
-  session.user = await api.getUser()
-  // Cached screens belong to one account: switching users drops them.
+  try {
+    session.user = await api.getUser()
+  } catch {
+    await api.clearLocalSession()
+    session.user = null
+  }
+
   setCacheScope(cacheScopeFor(session.user?.email))
   session.ready = true
   if (session.user) void refreshUnread()
@@ -30,12 +38,16 @@ export function dropSession(): void {
   resetUnread()
 }
 
-/** Keeps the reactive session in step with the token store. */
 export function initializeSession(): Promise<void> {
-  window.addEventListener('auth-changed', () => {
-    void hydrateSession()
-  })
-  window.addEventListener('auth-cleared', () => dropSession())
-  window.addEventListener('auth-expired', () => dropSession())
-  return hydrateSession()
+  if (!listenersInstalled) {
+    listenersInstalled = true
+    window.addEventListener('auth-changed', () => {
+      void hydrateSession()
+    })
+    window.addEventListener('auth-cleared', () => dropSession())
+    window.addEventListener('auth-expired', () => dropSession())
+  }
+
+  restoration ??= hydrateSession()
+  return restoration
 }

@@ -1,36 +1,30 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import router from './router';
+import router from './router'
 import { initializePush } from './services/push'
 import { initializeSession } from './services/session'
 import { clearCache, hydrateCache } from './services/screen-cache'
 import { safeNotificationRedirect } from './services/notification-routing'
 import { installPerfConsole, perfEnabled, setPerfScreen } from './services/perf'
 
-import { IonicVue } from '@ionic/vue';
+import { IonicVue } from '@ionic/vue'
 
-/* Core CSS required for Ionic components to work properly */
-import '@ionic/vue/css/core.css';
+import '@ionic/vue/css/core.css'
+import '@ionic/vue/css/normalize.css'
+import '@ionic/vue/css/structure.css'
+import '@ionic/vue/css/typography.css'
+import '@ionic/vue/css/padding.css'
+import '@ionic/vue/css/float-elements.css'
+import '@ionic/vue/css/text-alignment.css'
+import '@ionic/vue/css/text-transformation.css'
+import '@ionic/vue/css/flex-utils.css'
+import '@ionic/vue/css/display.css'
+import './theme/variables.css'
 
-/* Basic CSS for apps built with Ionic */
-import '@ionic/vue/css/normalize.css';
-import '@ionic/vue/css/structure.css';
-import '@ionic/vue/css/typography.css';
-
-/* Optional CSS utils */
-import '@ionic/vue/css/padding.css';
-import '@ionic/vue/css/float-elements.css';
-import '@ionic/vue/css/text-alignment.css';
-import '@ionic/vue/css/text-transformation.css';
-import '@ionic/vue/css/flex-utils.css';
-import '@ionic/vue/css/display.css';
-
-/* Theme variables (light-only by design: the Super Admin console is a single
-   deliberate palette rather than a half-themed dark mode). */
-import './theme/variables.css';
-
-// Never leave one account's cached screens behind for the next sign-in.
-window.addEventListener('auth-cleared', () => clearCache())
+window.addEventListener('auth-cleared', () => {
+  clearCache()
+  if (router.currentRoute.value.meta.requiresAuth) void router.replace('/login')
+})
 
 window.addEventListener('auth-expired', () => {
   void router.replace({
@@ -39,32 +33,19 @@ window.addEventListener('auth-expired', () => {
   })
 })
 
-const app = createApp(App)
-  .use(IonicVue)
-  .use(router);
+const app = createApp(App).use(IonicVue).use(router)
 
-/** Bound session restoration so storage cannot indefinitely delay startup. */
-async function withDeadline(work: Promise<unknown>, ms: number): Promise<void> {
-  await Promise.race([
-    work.then(
-      () => undefined,
-      () => undefined,
-    ),
-    new Promise<void>((resolve) => setTimeout(resolve, ms)),
-  ])
-}
+installPerfConsole()
+if (perfEnabled()) router.afterEach((to) => setPerfScreen(to.fullPath))
 
-async function boot(): Promise<void> {
-  installPerfConsole()
-  if (perfEnabled()) router.afterEach((to) => setPerfScreen(to.fullPath))
+// Paint the lightweight shell before any bridge call or route data request.
+app.mount('#app')
 
-  // Legacy cache cleanup does not load any screen data or delay rendering.
-  void hydrateCache().catch(() => undefined)
-  await withDeadline(initializeSession(), 1500)
+// Legacy plaintext cache cleanup never loads screen payloads and stays off the
+// startup path.
+void hydrateCache().catch(() => undefined)
 
+void initializeSession().finally(async () => {
   await router.isReady()
-  app.mount('#app')
   initializePush(router)
-}
-
-void boot()
+})

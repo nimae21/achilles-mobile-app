@@ -1,12 +1,12 @@
 <template>
   <div v-if="loading" class="card card--flush" aria-busy="true">
     <div v-for="row in skeletonRows" :key="row" class="skeleton-row">
-      <div class="skeleton" style="width: 42px; height: 42px; border-radius: 14px" />
-      <div style="flex: 1">
-        <div class="skeleton" style="height: 12px; width: 62%" />
-        <div class="skeleton" style="height: 10px; width: 34%; margin-top: 9px" />
+      <div class="skeleton skeleton--avatar" />
+      <div class="skeleton-copy">
+        <div class="skeleton skeleton--title" />
+        <div class="skeleton skeleton--subtitle" />
       </div>
-      <div class="skeleton" style="height: 12px; width: 52px" />
+      <div class="skeleton skeleton--side" />
     </div>
   </div>
 
@@ -15,7 +15,7 @@
     <div class="state-icon"><ion-icon :icon="alertCircleOutline" /></div>
     <p class="state-title">{{ errorTitle }}</p>
     <p class="state-body">{{ error }}</p>
-    <button class="btn btn--ghost" style="max-width: 220px" @click="$emit('retry')">Try again</button>
+    <button class="btn btn--ghost btn--narrow" @click="$emit('retry')">Try again</button>
   </div>
 
   <div v-else-if="empty" class="state">
@@ -31,7 +31,7 @@
       <ion-spinner name="crescent" />
       <span>Updating...</span>
     </div>
-    <div v-if="error" class="notice notice--brand" style="margin-bottom: 12px">
+    <div v-if="error" class="notice notice--brand notice--below">
       <ion-icon :icon="cloudOfflineOutline" />
       <span>Couldn't refresh just now — showing the last loaded data.</span>
     </div>
@@ -72,6 +72,14 @@ defineEmits<{ retry: [] }>()
 </script>
 
 <style scoped>
+.skeleton-copy { flex: 1; }
+.skeleton--avatar { width: 42px; height: 42px; border-radius: 14px; }
+.skeleton--title { width: 62%; height: 12px; }
+.skeleton--subtitle { width: 34%; height: 10px; margin-top: 9px; }
+.skeleton--side { width: 52px; height: 12px; }
+.btn--narrow { max-width: 220px; }
+.notice--below { margin-bottom: 12px; }
+
 .refresh-line {
   display: flex;
   align-items: center;

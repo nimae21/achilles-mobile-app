@@ -1,5 +1,5 @@
 import { flushPromises } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const preferences = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), remove: vi.fn() }))
 vi.mock('@capacitor/preferences', () => ({ Preferences: preferences }))
 vi.mock('../../src/services/secure-storage', () => ({ SecureStorage: preferences }))
@@ -15,9 +15,18 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
 })
 
-function response(body: unknown, status = 200) {
-  return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) }
+function response(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(headers),
+    text: async () => JSON.stringify(body),
+  }
 }
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('super admin session handling', () => {
   it('exchanges credentials for a token and stores the session user', async () => {
@@ -39,6 +48,15 @@ describe('super admin session handling', () => {
     })
   })
 
+  it('clears both local values when a stored profile is invalid', async () => {
+    preferences.get.mockImplementation(async ({ key }: { key: string }) => ({
+      value: key === 'auth_user' ? '{not-json' : 'test-token',
+    }))
+
+    await expect(api.getUser()).resolves.toBeNull()
+    expect(preferences.remove).toHaveBeenCalledWith({ key: 'auth_token' })
+    expect(preferences.remove).toHaveBeenCalledWith({ key: 'auth_user' })
+  })
   it('surfaces the backend refusal when an admin or customer tries to sign in', async () => {
     fetchMock.mockResolvedValue(
       response({ message: 'This app is reserved for Super Admin accounts.' }, 403),
@@ -187,5 +205,71 @@ describe('screen cache', () => {
     expect(readCache('orders|{}', -1)).toBeNull()
     clearCache()
     expect(readCache('orders|{}', 60_000)).toBeNull()
+  })
+})
+
+describe('bounded request policy', () => {
+  it('honors a bounded Retry-After for a safe GET', async () => {
+    vi.useFakeTimers()
+    fetchMock
+      .mockResolvedValueOnce(response({ message: 'Slow down.' }, 429, { 'Retry-After': '1' }))
+      .mockResolvedValueOnce(response({ data: [], current_page: 1, last_page: 1, total: 0 }))
+
+    const pending = api.orders({ search: 'rate-limited' })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expect(pending).resolves.toMatchObject({ total: 0 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not wait for an excessive Retry-After', async () => {
+    fetchMock.mockResolvedValue(response({ message: 'Try later.' }, 429, { 'Retry-After': '60' }))
+    const error = await api.orders({ search: 'long-rate-limit' }).catch((caught) => caught)
+
+    expect(error).toMatchObject({ kind: 'rate_limit', retryAfterMs: 60_000 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('classifies bounded request timeouts separately from offline failures', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockImplementation(
+      (_url: string, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }),
+    )
+
+    const result = api.orders({ search: 'timeout' }).catch((caught) => caught)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(8_000)
+    await vi.advanceTimersByTimeAsync(350)
+    await vi.advanceTimersByTimeAsync(8_000)
+
+    const error = await result
+    expect(error).toMatchObject({ kind: 'timeout', status: 0 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports cold-backend responses promptly after the one safe retry', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValue(response({}, 503))
+    const result = api.orders({ search: 'cold-backend' }).catch((caught) => caught)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(350)
+
+    const error = await result
+    expect(error).toMatchObject({ kind: 'cold_backend', status: 503 })
+    expect(error.message).toContain('starting up')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never retries an unsafe write when the connection fails', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    const error = await api.inviteAdmin('new@example.test').catch((caught) => caught)
+
+    expect(error).toMatchObject({ kind: 'offline' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

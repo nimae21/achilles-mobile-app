@@ -66,3 +66,27 @@ it('deduplicates concurrent restoration and prevents it from resurrecting logout
   expect(mocks.native.get).toHaveBeenCalledTimes(1)
   expect(mocks.native.remove).toHaveBeenCalledWith({ key: 'auth_token' })
 })
+
+it('uses one native read per session field and no bridge reads after restoration', async () => {
+  mocks.native.get.mockImplementation(async ({ key }: { key: string }) => ({
+    value:
+      key === 'auth_token'
+        ? 'secure-token'
+        : JSON.stringify({ name: 'Root', email: 'root@example.test', role: 'super_admin' }),
+  }))
+
+  const { SecureStorage, secureStorageBridgeCalls } = await import('../../src/services/secure-storage')
+  await Promise.all([
+    SecureStorage.get({ key: 'auth_token' }),
+    SecureStorage.get({ key: 'auth_token' }),
+    SecureStorage.get({ key: 'auth_user' }),
+    SecureStorage.get({ key: 'auth_user' }),
+  ])
+  expect(mocks.native.get).toHaveBeenCalledTimes(2)
+  expect(secureStorageBridgeCalls().get).toBe(2)
+
+  await SecureStorage.get({ key: 'auth_token' })
+  await SecureStorage.get({ key: 'auth_user' })
+  expect(mocks.native.get).toHaveBeenCalledTimes(2)
+  expect(secureStorageBridgeCalls().get).toBe(2)
+})

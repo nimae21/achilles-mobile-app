@@ -32,7 +32,7 @@
           </form>
         </div>
 
-        <div class="notice" style="margin-top: 14px">
+        <div class="notice notice--spaced">
           <ion-icon :icon="informationCircleOutline" />
           <span>
             Invitations expire after 48 hours. Re-inviting the same address invalidates the previous link
@@ -76,6 +76,7 @@ async function submit(): Promise<void> {
 </script>
 
 <style scoped>
+.notice--spaced { margin-top: 14px; }
 .lede {
   margin: 0 0 16px;
   font-size: 0.86rem;

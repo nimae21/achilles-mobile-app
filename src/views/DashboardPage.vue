@@ -59,7 +59,9 @@
             <div class="card">
               <div class="trend">
                 <div v-for="point in salesTrend" :key="point.date" class="trend-bar">
-                  <div class="trend-fill" :style="{ height: barHeight(point.total) }" />
+                  <svg class="trend-fill" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <rect x="0" :y="100 - barPercent(point.total)" width="100" :height="barPercent(point.total)" rx="5" />
+                  </svg>
                   <span>{{ point.label }}</span>
                 </div>
               </div>
@@ -68,7 +70,7 @@
                 <strong class="mono">{{ money(summary.sales_7_days) }}</strong>
               </div>
             </div>
-            <div class="stat-grid" style="margin-top: 10px">
+            <div class="stat-grid stat-grid--spaced">
               <StatCard label="Sales today" :value="money(summary.sales_today)" to="/tabs/orders?status=completed" />
               <StatCard label="All-time sales" :value="compactMoney(summary.sales_total)" />
               <StatCard label="Completed orders" :value="count(summary.orders_completed)" to="/tabs/orders?status=completed" />
@@ -247,8 +249,8 @@ const firstName = computed(() => session.user?.name?.split(' ')[0] ?? 'Super Adm
 const today = new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' })
 
 const trendMax = computed(() => Math.max(1, ...salesTrend.value.map((point) => point.total)))
-function barHeight(total: number): string {
-  return `${Math.max(4, Math.round((total / trendMax.value) * 100))}%`
+function barPercent(total: number): number {
+  return Math.max(4, Math.round((total / trendMax.value) * 100))
 }
 
 function alertIcon(kind: string): string {
@@ -379,6 +381,18 @@ onAppResume(() => void refreshIfStale())
 .alert-chevron {
   color: var(--slate-400);
   font-size: 1rem;
+}
+
+.trend-fill {
+  height: 100%;
+}
+
+.trend-fill rect {
+  fill: var(--brand-red);
+}
+
+.stat-grid--spaced {
+  margin-top: 10px;
 }
 
 .trend-legend {

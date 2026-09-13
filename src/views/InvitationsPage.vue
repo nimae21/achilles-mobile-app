@@ -30,7 +30,7 @@
           :skeleton-rows="4"
           @retry="load"
         >
-          <div class="card card--flush" style="margin-top: 14px">
+          <div class="card card--flush card--spaced">
             <div v-for="invitation in invitations" :key="invitation.id" class="row">
               <div class="avatar">
                 <ion-icon :icon="mailOutline" />
@@ -93,6 +93,7 @@ onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>
+.card--spaced { margin-top: 14px; }
 .count-line {
   margin: 16px 4px 0;
   text-align: center;

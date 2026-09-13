@@ -103,3 +103,4 @@ app/src/main/res/xml/config.xml
 *.jks
 *.keystore
 /app/google-services.json
+/app/release/

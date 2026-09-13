@@ -19,7 +19,7 @@
         <ion-refresher-content pulling-text="Pull to refresh" refreshing-spinner="crescent" />
       </ion-refresher>
 
-      <div class="chip-row" style="padding-top: 14px">
+      <div class="chip-row chip-row--spaced">
         <button
           v-for="chip in chips"
           :key="chip.key"
@@ -180,6 +180,7 @@ onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>
+.chip-row--spaced { padding-top: 14px; }
 .notification--unread {
   background: linear-gradient(90deg, rgba(220, 38, 38, 0.045) 0%, transparent 60%);
 }

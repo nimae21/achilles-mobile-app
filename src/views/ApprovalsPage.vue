@@ -66,7 +66,7 @@
                 </div>
                 <div class="row-side">
                   <StatusPill :label="item.status" :status="item.status" />
-                  <div v-if="item.image_count" class="row-sub" style="margin-top: 6px">
+                  <div v-if="item.image_count" class="row-sub row-sub--spaced">
                     {{ item.image_count }} image(s)
                   </div>
                 </div>
@@ -201,6 +201,7 @@ onAppResume(() => void refreshIfStale())
 </script>
 
 <style scoped>
+.row-sub--spaced { margin-top: 6px; }
 .chip-count {
   margin-left: 6px;
   font-size: 0.7rem;

@@ -10,6 +10,11 @@ interface Storage {
 const native = registerPlugin<Storage>('SecureSession')
 const memory = new Map<SessionKey, string | null>()
 const pending = new Map<SessionKey, Promise<{ value: string | null }>>()
+const bridgeCalls = { get: 0, set: 0, remove: 0 }
+
+export function secureStorageBridgeCalls(): Readonly<typeof bridgeCalls> {
+  return { ...bridgeCalls }
+}
 
 export const SecureStorage: Storage = {
   async get({ key }) {
@@ -19,12 +24,16 @@ export const SecureStorage: Storage = {
     const work = (async () => {
       let value: string | null = null
       if (Capacitor.getPlatform() === 'android') {
+        bridgeCalls.get++
         value = (await native.get({ key })).value
         if (value === null) {
           value = (await Preferences.get({ key })).value
           // Commit encryption before deleting a legacy value. Failure never
           // falls back to writing or authenticating from plaintext storage.
-          if (value !== null) await native.set({ key, value })
+          if (value !== null) {
+            bridgeCalls.set++
+            await native.set({ key, value })
+          }
         }
       }
       await Preferences.remove({ key })
@@ -36,7 +45,10 @@ export const SecureStorage: Storage = {
   },
   async set({ key, value }) {
     await pending.get(key)
-    if (Capacitor.getPlatform() === 'android') await native.set({ key, value })
+    if (Capacitor.getPlatform() === 'android') {
+      bridgeCalls.set++
+      await native.set({ key, value })
+    }
     await Preferences.remove({ key })
     memory.set(key, value)
   },
@@ -44,7 +56,10 @@ export const SecureStorage: Storage = {
     // Wait for restoration so it cannot resurrect a signed-out session.
     await pending.get(key)?.catch(() => undefined)
     memory.set(key, null)
-    if (Capacitor.getPlatform() === 'android') await native.remove({ key })
+    if (Capacitor.getPlatform() === 'android') {
+      bridgeCalls.remove++
+      await native.remove({ key })
+    }
     await Preferences.remove({ key })
   },
 }
